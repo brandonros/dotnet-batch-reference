@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="BatchApp.Data/BatchApp.Data.csproj" />
+  <Project Path="BatchApp/BatchApp.csproj" />
+</Solution>

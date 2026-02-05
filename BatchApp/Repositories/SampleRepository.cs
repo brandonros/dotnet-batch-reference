@@ -1,5 +1,5 @@
 using System.Data;
-using BatchApp.Services;
+using BatchApp.Data;
 using Microsoft.Data.SqlClient;
 
 namespace BatchApp.Repositories;

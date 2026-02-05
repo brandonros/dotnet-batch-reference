@@ -1,3 +1,4 @@
+using BatchApp.Data;
 using BatchApp.Repositories;
 using BatchApp.Services;
 using Microsoft.Extensions.Configuration;

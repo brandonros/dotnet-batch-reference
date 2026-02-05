@@ -1,3 +1,4 @@
+using BatchApp.Data;
 using BatchApp.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;

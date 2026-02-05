@@ -1,6 +1,6 @@
 using Microsoft.Data.SqlClient;
 
-namespace BatchApp.Services;
+namespace BatchApp.Data;
 
 public interface ISqlConnectionFactory
 {

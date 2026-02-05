@@ -1,7 +1,6 @@
-using System.Data;
 using Microsoft.Data.SqlClient;
 
-namespace BatchApp.Services;
+namespace BatchApp.Data;
 
 /// <summary>
 /// Low-level SQL execution with built-in connection management and resilience.
