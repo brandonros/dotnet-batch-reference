@@ -2,15 +2,42 @@
 
 Production-grade .NET batch application pattern for high-throughput database operations using `Microsoft.Data.SqlClient` with stored procedures.
 
+## Project Structure
+
+```
+BatchApp.sln
+├── BatchApp.Data/          # Reusable library (see BatchApp.Data/README.md)
+│   └── Services/
+│       ├── ISqlConnectionFactory.cs
+│       ├── SqlConnectionFactory.cs
+│       ├── ISqlExecutor.cs
+│       └── SqlExecutor.cs
+└── BatchApp/               # Sample console application
+    ├── Program.cs
+    ├── Services/
+    │   └── BatchOrchestrator.cs
+    └── Repositories/
+        ├── ISampleRepository.cs
+        └── SampleRepository.cs
+```
+
+## BatchApp.Data (Reusable Library)
+
+See **[BatchApp.Data/README.md](BatchApp.Data/README.md)** for full documentation.
+
+Core database infrastructure:
+- `SqlConnectionFactory` - Creates connections from connection string
+- `SqlExecutor` - Connection lifecycle, Polly resilience, stored proc execution
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Program.cs (Composition Root)                                  │
-│  ├── ISqlConnectionFactory  (Singleton)  - connection string    │
-│  ├── ISqlExecutor           (Scoped)     - owns connection      │
-│  ├── ISampleRepository      (Scoped)     - stored proc contracts│
-│  └── BatchOrchestrator      (Singleton)  - parallel processing  │
+│  ├── ISqlConnectionFactory  (Singleton)  - from BatchApp.Data   │
+│  ├── ISqlExecutor           (Scoped)     - from BatchApp.Data   │
+│  ├── ISampleRepository      (Scoped)     - app-specific         │
+│  └── BatchOrchestrator      (Singleton)  - app-specific         │
 └─────────────────────────────────────────────────────────────────┘
 
 Per Parallel Worker (24 concurrent):
@@ -33,68 +60,17 @@ Per Parallel Worker (24 concurrent):
 
 ## Layer Responsibilities
 
-| Layer | Class | Lifetime | Responsibility |
-|-------|-------|----------|----------------|
-| **Factory** | `SqlConnectionFactory` | Singleton | Creates `SqlConnection` instances from connection string |
-| **Executor** | `SqlExecutor` | Scoped | Connection lifecycle, retries, reconnection, command execution |
-| **Repository** | `SampleRepository` | Scoped | Stored procedure contracts, parameter binding |
-| **Orchestrator** | `BatchOrchestrator` | Singleton | File processing, chunking, parallelism, scope management |
-
-## Key Design Decisions
-
-### Why Scoped (not Transient)?
-
-```csharp
-builder.Services.AddScoped<ISqlExecutor, SqlExecutor>();
-builder.Services.AddScoped<ISampleRepository, SampleRepository>();
-```
-
-- **Scoped**: Same instance within a DI scope. Repository gets the *same* `SqlExecutor` that was opened.
-- **Transient**: New instance every resolution. Repository would get a *different* `SqlExecutor` with a closed connection.
-
-### Connection Lifetime
-
-- **1 connection per chunk** (1000 rows)
-- Connection opened at chunk start via `OpenAsync()`
-- Same connection reused for all rows in the chunk
-- Connection disposed (returned to pool) when scope ends
-- Up to 24 connections active concurrently
-
-### Connection Pooling
-
-ADO.NET manages the connection pool automatically. Connections are pooled by connection string.
-
-Recommended connection string settings:
-```
-Server=...;Database=...;Max Pool Size=30;Min Pool Size=0;Connect Timeout=15;
-```
-
-- `Max Pool Size=30`: Matches parallelism (24) + buffer for retry overlap
-- `Connect Timeout=15`: Seconds to wait for connection from pool
-
-### Resilience (Polly)
-
-```
-Attempt 1: SqlException (transient/connection error)
-  → OnRetry: attempt reconnect (failure caught, logged)
-    → Backoff: 100ms * 2^attempt + jitter (±25%)
-      → Attempt 2
-        → Attempt 3
-          → Final failure thrown to caller
-```
-
-Retryable errors:
-- **Connection**: timeout, network error, connection closed, Azure throttling
-- **Transient**: deadlock victim, lock timeout, snapshot conflict
-
-### Transaction Boundary
-
-Each row commits independently (no batch transaction). This matches the requirement for sequential per-row commits.
+| Layer | Class | Lifetime | Project |
+|-------|-------|----------|---------|
+| **Factory** | `SqlConnectionFactory` | Singleton | BatchApp.Data |
+| **Executor** | `SqlExecutor` | Scoped | BatchApp.Data |
+| **Repository** | `SampleRepository` | Scoped | BatchApp |
+| **Orchestrator** | `BatchOrchestrator` | Singleton | BatchApp |
 
 ## Usage
 
 ```bash
-dotnet run -- input.txt
+dotnet run --project BatchApp -- input.txt
 ```
 
 ### Configuration
@@ -108,67 +84,40 @@ dotnet run -- input.txt
 }
 ```
 
-## Adding a New Repository
+## Sample App: BatchOrchestrator
 
-1. Define the interface:
+The sample app demonstrates parallel file processing:
+
 ```csharp
-public interface IOrderRepository
-{
-    Task ProcessOrderAsync(int orderId, CancellationToken ct = default);
-}
-```
-
-2. Implement using `ISqlExecutor`:
-```csharp
-public sealed class OrderRepository : IOrderRepository
-{
-    private readonly ISqlExecutor _executor;
-
-    public OrderRepository(ISqlExecutor executor) => _executor = executor;
-
-    public async Task ProcessOrderAsync(int orderId, CancellationToken ct = default)
+await Parallel.ForEachAsync(
+    chunks,
+    new ParallelOptions { MaxDegreeOfParallelism = 24 },
+    async (chunk, ct) =>
     {
-        await _executor.ExecuteNonQueryAsync(
-            "[dbo].[ProcessOrder]",
-            p => p.Add("@OrderId", SqlDbType.Int).Value = orderId,
-            commandTimeout: 30,
-            ct);
-    }
-}
+        await using var scope = _scopeFactory.CreateAsyncScope();
+
+        var executor = scope.ServiceProvider.GetRequiredService<ISqlExecutor>();
+        await executor.OpenAsync(ct);
+
+        var repository = scope.ServiceProvider.GetRequiredService<ISampleRepository>();
+
+        foreach (var row in chunk)
+        {
+            await repository.DoSomethingAsync(row, ct);
+        }
+    });
 ```
 
-3. Register as Scoped:
-```csharp
-builder.Services.AddScoped<IOrderRepository, OrderRepository>();
-```
+Key patterns:
+- **1 scope per chunk** (1000 rows)
+- **1 connection per scope** (opened once, reused)
+- **Scoped registration** ensures repository shares the executor's connection
+- **Sequential commits** - each row commits independently
 
-## Observability
+## Adding a Repository
 
-### Tracing (DataDog)
+1. Define interface and implementation using `ISqlExecutor`
+2. Register as **Scoped** (same lifetime as executor)
+3. Resolve within a DI scope
 
-Add `[Trace]` attributes to:
-- `SqlExecutor.OpenAsync`
-- `SqlExecutor.ExecuteNonQueryAsync`
-- `SqlExecutor.ExecuteScalarAsync`
-- `SqlExecutor.ExecuteReaderAsync`
-- Repository methods
-
-### Logging
-
-Uses `ILogger<T>`. Key log events:
-- Batch start/complete with row counts
-- Retry attempts with error numbers and delays
-- Reconnection attempts (success/failure)
-
-## Error Classification
-
-| Error Number | Type | Description |
-|--------------|------|-------------|
-| -2 | Connection | Command timeout |
-| -1 | Connection | Network error |
-| 53 | Connection | Cannot connect |
-| 1205 | Transient | Deadlock victim |
-| 1222 | Transient | Lock timeout |
-| 40613 | Connection | Azure DB unavailable |
-
-See `SqlExecutor.IsConnectionErrorNumber()` and `IsTransientErrorNumber()` for full list.
+See [BatchApp.Data/README.md](BatchApp.Data/README.md#repository-pattern) for full example.
