@@ -9,12 +9,26 @@ using Microsoft.Extensions.Logging;
 var builder = Host.CreateApplicationBuilder(args);
 
 // Register services
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+var defaultConnectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
+var readOnlyConnectionString = builder.Configuration.GetConnectionString("ReadOnlyConnection")
+    ?? throw new InvalidOperationException("Connection string 'ReadOnlyConnection' not found.");
 
-// Infrastructure layer (connection management)
-builder.Services.AddSingleton<ISqlConnectionFactory>(new SqlConnectionFactory(connectionString));
-builder.Services.AddScoped<ISqlExecutor, SqlExecutor>();
+// Infrastructure layer (connection management) - keyed services for read/write separation
+builder.Services.AddKeyedSingleton<ISqlConnectionFactory>("default",
+    new SqlConnectionFactory(defaultConnectionString));
+builder.Services.AddKeyedSingleton<ISqlConnectionFactory>("readonly",
+    new SqlConnectionFactory(readOnlyConnectionString));
+
+builder.Services.AddKeyedScoped<ISqlExecutor>("default", (sp, key) =>
+    new SqlExecutor(
+        sp.GetRequiredKeyedService<ISqlConnectionFactory>("default"),
+        sp.GetRequiredService<ILogger<SqlExecutor>>()));
+
+builder.Services.AddKeyedScoped<ISqlExecutor>("readonly", (sp, key) =>
+    new SqlExecutor(
+        sp.GetRequiredKeyedService<ISqlConnectionFactory>("readonly"),
+        sp.GetRequiredService<ILogger<SqlExecutor>>()));
 
 // Repository layer (business logic / stored proc contracts)
 // Scoped: same executor instance shared within each parallel worker's scope

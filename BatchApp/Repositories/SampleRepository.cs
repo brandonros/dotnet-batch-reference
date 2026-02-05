@@ -1,6 +1,7 @@
 using System.Data;
 using BatchApp.Data;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace BatchApp.Repositories;
 
@@ -11,17 +12,21 @@ namespace BatchApp.Repositories;
 /// </summary>
 public sealed class SampleRepository : ISampleRepository
 {
-    private readonly ISqlExecutor _executor;
+    private readonly ISqlExecutor _writeExecutor;
+    private readonly ISqlExecutor _readExecutor;
 
-    public SampleRepository(ISqlExecutor executor)
+    public SampleRepository(
+        [FromKeyedServices("default")] ISqlExecutor writeExecutor,
+        [FromKeyedServices("readonly")] ISqlExecutor readExecutor)
     {
-        _executor = executor;
+        _writeExecutor = writeExecutor;
+        _readExecutor = readExecutor;
     }
 
     // DATADOG: [Trace] attribute here
     public async Task DoSomethingAsync(string someValue, CancellationToken cancellationToken = default)
     {
-        await _executor.ExecuteNonQueryAsync(
+        await _writeExecutor.ExecuteNonQueryAsync(
             "[dbo].[DoSomething]",
             parameters =>
             {
@@ -35,7 +40,7 @@ public sealed class SampleRepository : ISampleRepository
     // DATADOG: [Trace] attribute here
     public async Task<int> GetSomethingCountAsync(int categoryId, CancellationToken cancellationToken = default)
     {
-        var result = await _executor.ExecuteScalarAsync<int>(
+        var result = await _readExecutor.ExecuteScalarAsync<int>(
             "[dbo].[GetSomethingCount]",
             parameters =>
             {
@@ -50,7 +55,7 @@ public sealed class SampleRepository : ISampleRepository
     // DATADOG: [Trace] attribute here
     public async Task<SampleRecord?> GetSomethingByIdAsync(int id, CancellationToken cancellationToken = default)
     {
-        return await _executor.ExecuteReaderAsync(
+        return await _readExecutor.ExecuteReaderAsync(
             "[dbo].[GetSomethingById]",
             async reader =>
             {
