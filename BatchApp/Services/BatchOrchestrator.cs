@@ -37,11 +37,12 @@ public sealed class BatchOrchestrator
             {
                 await using var scope = _scopeFactory.CreateAsyncScope();
 
-                // Get executor and open connection for this chunk
-                var executor = scope.ServiceProvider.GetRequiredService<ISqlExecutor>();
-                await executor.OpenAsync(ct);
+                // Get executors and open connections for this chunk
+                var writeExecutor = scope.ServiceProvider.GetRequiredKeyedService<ISqlExecutor>("default");
+                var readExecutor = scope.ServiceProvider.GetRequiredKeyedService<ISqlExecutor>("readonly");
+                await Task.WhenAll(writeExecutor.OpenAsync(ct), readExecutor.OpenAsync(ct));
 
-                // Get repository (uses the same executor instance via DI scope)
+                // Get repository (uses the same executor instances via DI scope)
                 var repository = scope.ServiceProvider.GetRequiredService<ISampleRepository>();
 
                 foreach (var row in chunk)
